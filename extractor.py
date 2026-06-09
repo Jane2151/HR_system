@@ -211,6 +211,13 @@ def extract_education(text: str) -> list[str]:
                 found_uni = " ".join(uni_words).title()
 
             cgpa_match = re.search(r"(?i)(?:CGPA|GPA)[\s:\-]*([0-4]\.\d{1,2})", block_text)
+
+            if not cgpa_match:
+                cgpa_match = re.search(r"(?i)(?:CGPA|GPA)[\s:\-]*([0-4]\.\d{1,4})", edu_block)
+
+            if not cgpa_match:
+                cgpa_match = re.search(r"(?i)(?:CGPA|GPA|Academic Qualifications:\s*CGPA)[\s:\-]*([0-4]\.\d{1,4})", text)
+
             found_cgpa = cgpa_match.group(1) if cgpa_match else "N/A"
             
             # 6. Format and save
