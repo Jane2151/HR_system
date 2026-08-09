@@ -1,3 +1,4 @@
+import html
 import os
 import tempfile
 
@@ -51,7 +52,7 @@ if uploaded_file:
             st.markdown(
                 f'<div style="background:#f0f2f6;border-left:4px solid #0078D4;'
                 f'padding:8px 12px;margin-bottom:8px;border-radius:4px;font-size:14px">'
-                f'{entry}</div>',
+                f'{html.escape(entry)}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -62,7 +63,7 @@ if uploaded_file:
             badge_html = " ".join(
                 f'<span style="background:#0078D4;color:white;padding:4px 10px;'
                 f'border-radius:12px;margin:3px;display:inline-block;font-size:13px">'
-                f'{skill}</span>'
+                f'{html.escape(skill)}</span>'
                 for skill in data["skills"]
             )
             st.markdown(badge_html, unsafe_allow_html=True)
