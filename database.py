@@ -42,6 +42,18 @@ def save_resume(filename: str, data: dict):
     conn.close()
 
 
+def find_duplicate(email: str):
+    """Return (name, uploaded_at) of an existing resume with this email, or None."""
+    if not email or email == "Not found":
+        return None
+    conn = sqlite3.connect(DB_NAME)
+    row = conn.execute(
+        "SELECT name, uploaded_at FROM resumes WHERE email = ? LIMIT 1", (email,)
+    ).fetchone()
+    conn.close()
+    return row
+
+
 def get_all_resumes() -> pd.DataFrame:
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query(

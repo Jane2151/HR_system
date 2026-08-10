@@ -4,7 +4,7 @@ import tempfile
 
 import streamlit as st
 
-from database import delete_resume, get_all_resumes, init_db, save_resume
+from database import delete_resume, find_duplicate, get_all_resumes, init_db, save_resume
 from extractor import parse_resume
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -27,14 +27,28 @@ st.divider()
 uploaded_file = st.file_uploader("Upload a Resume (PDF only)", type=["pdf"])
 
 if uploaded_file:
-    with st.spinner("Reading and extracting information…"):
-        # Write to a temp file so pdfplumber can open it by path
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(uploaded_file.read())
-            tmp_path = tmp.name
+    # Only parse (and call the LLM) once per uploaded file — Streamlit reruns this
+    # whole script on every button click, so without caching, clicking "Save" would
+    # silently trigger a second Gemini call and could fail on a transient API error.
+    if st.session_state.get("parsed_file_id") != uploaded_file.file_id:
+        with st.spinner("Reading and extracting information…"):
+            # Write to a temp file so pdfplumber can open it by path
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(uploaded_file.read())
+                tmp_path = tmp.name
 
-        data = parse_resume(tmp_path)
-        os.unlink(tmp_path)
+            try:
+                data = parse_resume(tmp_path)
+            except Exception as e:
+                os.unlink(tmp_path)
+                st.error(f"Failed to extract resume data (Gemini API error): {e}")
+                st.stop()
+            os.unlink(tmp_path)
+
+        st.session_state["parsed_file_id"] = uploaded_file.file_id
+        st.session_state["parsed_data"] = data
+
+    data = st.session_state["parsed_data"]
 
     st.success("Resume parsed successfully!")
 
@@ -73,9 +87,17 @@ if uploaded_file:
     st.divider()
 
     if st.button("💾 Save to Database", type="primary"):
-        save_resume(uploaded_file.name, data)
-        st.success(f"Saved **{data['name']}** to the database.")
-        st.rerun()
+        duplicate = find_duplicate(data["email"])
+        if duplicate:
+            dup_name, dup_uploaded_at = duplicate
+            st.warning(
+                f"A resume with email **{data['email']}** was already saved as "
+                f"**{dup_name}** on {str(dup_uploaded_at)[:16]}. Not saved again to avoid duplicates."
+            )
+        else:
+            save_resume(uploaded_file.name, data)
+            st.success(f"Saved **{data['name']}** to the database.")
+            st.rerun()
 
 # ── Database Table ────────────────────────────────────────────────────────────
 st.subheader("📊 All Parsed Resumes")
