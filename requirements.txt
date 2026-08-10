@@ -1,6 +1,7 @@
 streamlit
 pdfplumber
 pandas
-google-genai
 pydantic
 python-dotenv
+openai
+python-dateutil

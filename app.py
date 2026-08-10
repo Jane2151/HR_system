@@ -7,6 +7,27 @@ import streamlit as st
 from database import delete_resume, find_duplicate, get_all_resumes, init_db, save_resume
 from extractor import parse_resume
 
+
+def _render_box(inner_html: str) -> None:
+    # Fixed light background with an explicit dark text color, so the box stays
+    # readable regardless of the viewer's light/dark Streamlit theme.
+    st.markdown(
+        f'<div style="background:#f0f2f6;color:#1a1a1a;border-left:4px solid #0078D4;'
+        f'padding:8px 12px;margin-bottom:8px;border-radius:4px;font-size:14px">'
+        f'{inner_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_entries(entries: list[dict]) -> None:
+    for entry in entries:
+        inner = f"<strong>{html.escape(entry['header'])}</strong>"
+        if entry["bullets"]:
+            bullets_html = "".join(f"<li>{html.escape(b)}</li>" for b in entry["bullets"])
+            inner += f'<ul style="margin:6px 0 0 0;padding-left:18px">{bullets_html}</ul>'
+        _render_box(inner)
+
+
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="HR digitalization",
@@ -29,7 +50,7 @@ uploaded_file = st.file_uploader("Upload a Resume (PDF only)", type=["pdf"])
 if uploaded_file:
     # Only parse (and call the LLM) once per uploaded file — Streamlit reruns this
     # whole script on every button click, so without caching, clicking "Save" would
-    # silently trigger a second Gemini call and could fail on a transient API error.
+    # silently trigger a second OpenRouter call and could fail on a transient API error.
     if st.session_state.get("parsed_file_id") != uploaded_file.file_id:
         with st.spinner("Reading and extracting information…"):
             # Write to a temp file so pdfplumber can open it by path
@@ -41,7 +62,7 @@ if uploaded_file:
                 data = parse_resume(tmp_path)
             except Exception as e:
                 os.unlink(tmp_path)
-                st.error(f"Failed to extract resume data (Gemini API error): {e}")
+                st.error(f"Failed to extract resume data (OpenRouter API error): {e}")
                 st.stop()
             os.unlink(tmp_path)
 
@@ -63,15 +84,10 @@ if uploaded_file:
 
         st.subheader("🎓 Education")
         for entry in data["education"]:
-            st.markdown(
-                f'<div style="background:#f0f2f6;border-left:4px solid #0078D4;'
-                f'padding:8px 12px;margin-bottom:8px;border-radius:4px;font-size:14px">'
-                f'{html.escape(entry)}</div>',
-                unsafe_allow_html=True,
-            )
+            _render_box(html.escape(entry))
 
     with col_right:
-        st.subheader("🛠️ Skills Detected")
+        st.subheader("🛠️ Other Skills")
         if data["skills"]:
             # Display skills as badge-style pills
             badge_html = " ".join(
@@ -83,6 +99,18 @@ if uploaded_file:
             st.markdown(badge_html, unsafe_allow_html=True)
         else:
             st.info("No matching skills found in the resume.")
+
+    st.subheader("💼 Experience")
+    if data["experience"]:
+        _render_entries(data["experience"])
+    else:
+        st.info("No work experience listed.")
+
+    st.subheader("🧩 Independent Projects")
+    if data["projects"]:
+        _render_entries(data["projects"])
+    else:
+        st.info("No independent projects listed.")
 
     st.divider()
 

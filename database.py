@@ -15,19 +15,38 @@ def init_db():
             phone       TEXT,
             skills      TEXT,
             education   TEXT,
+            experience  TEXT,
+            projects    TEXT,
             uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migrate existing databases created before these columns existed.
+    # SQLite has no "ADD COLUMN IF NOT EXISTS", so check first.
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(resumes)")}
+    for column in ("experience", "projects"):
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE resumes ADD COLUMN {column} TEXT")
     conn.commit()
     conn.close()
+
+
+def _serialize_entries(entries: list[dict]) -> str:
+    """Flatten {'header', 'bullets'} entries into plain text for TEXT column storage."""
+    blocks = []
+    for entry in entries:
+        block = entry["header"]
+        if entry["bullets"]:
+            block += " | " + "; ".join(entry["bullets"])
+        blocks.append(block)
+    return " || ".join(blocks)
 
 
 def save_resume(filename: str, data: dict):
     conn = sqlite3.connect(DB_NAME)
     conn.execute(
         """
-        INSERT INTO resumes (filename, name, email, phone, skills, education)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO resumes (filename, name, email, phone, skills, education, experience, projects)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             filename,
@@ -36,6 +55,8 @@ def save_resume(filename: str, data: dict):
             data["phone"],
             ", ".join(data["skills"]),
             " | ".join(data["education"]),
+            _serialize_entries(data["experience"]),
+            _serialize_entries(data["projects"]),
         ),
     )
     conn.commit()
