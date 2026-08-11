@@ -2,9 +2,11 @@ import html
 import os
 import tempfile
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 
-from database import delete_resume, find_duplicate, get_all_resumes, init_db, save_resume
+from database import PIPELINE_STAGES, find_duplicate, get_all_resumes, get_pipeline_counts, init_db, save_resume
 from extractor import parse_resume
 
 
@@ -106,11 +108,11 @@ if uploaded_file:
     else:
         st.info("No work experience listed.")
 
-    st.subheader("🧩 Independent Projects")
+    st.subheader("🧩 Projects")
     if data["projects"]:
         _render_entries(data["projects"])
     else:
-        st.info("No independent projects listed.")
+        st.info("No projects listed.")
 
     st.divider()
 
@@ -124,44 +126,49 @@ if uploaded_file:
             )
         else:
             save_resume(uploaded_file.name, data)
-            st.success(f"Saved **{data['name']}** to the database.")
+            st.success(f"Saved **{data['name']}** to the database — added to the Screening stage.")
             st.rerun()
 
-# ── Database Table ────────────────────────────────────────────────────────────
-st.subheader("📊 All Parsed Resumes")
+st.divider()
 
-df = get_all_resumes()
+# ── Recruitment Dashboard ──────────────────────────────────────────────────────
+st.subheader("📊 Recruitment Dashboard")
 
-if df.empty:
-    st.info("No resumes saved yet. Upload a PDF above and click Save.")
+dashboard_df = get_all_resumes()
+
+st.metric("Total Candidates", len(dashboard_df))
+
+if dashboard_df.empty:
+    st.info("No candidates yet. Upload and save a resume above to get started.")
 else:
-    # Show count metric
-    st.metric("Total Candidates", len(df))
+    counts = get_pipeline_counts()
+    chart_df = pd.DataFrame({
+        "Stage": PIPELINE_STAGES,
+        "Candidates": [counts[stage] for stage in PIPELINE_STAGES],
+    })
 
-    # ── Per-row table with individual delete buttons ──────────────────────────
-    header = st.columns([2, 2, 2, 2, 1])
-    for col, label in zip(header, ["Name", "Email", "Phone", "Uploaded At", "Action"]):
-        col.markdown(f"**{label}**")
-    st.divider()
+    # Ordinal blue ramp for the funnel stages (one hue, light -> dark = depth in
+    # the pipeline). Only the darkest step swaps for dark mode so it doesn't
+    # sink below the 2:1 legibility floor on the dark chart surface.
+    theme_type = st.context.theme.type or "light"
+    offer_color = "#184f95" if theme_type == "dark" else "#0d366b"
+    stage_colors = ["#86b6ef", "#3987e5", "#1c5cab", offer_color]
 
-    for _, row in df.iterrows():
-        cols = st.columns([2, 2, 2, 2, 1])
-        cols[0].write(row["name"])
-        cols[1].write(row["email"])
-        cols[2].write(row["phone"])
-        cols[3].write(str(row["uploaded_at"])[:16])
-        if cols[4].button("🗑️ Delete", key=f"del_{row['id']}"):
-            delete_resume(int(row["id"]))
-            st.success(f"Deleted record for **{row['name']}**.")
-            st.rerun()
-
-    st.divider()
-
-    # ── Download CSV ──────────────────────────────────────────────────────────
-    csv = df.drop(columns=["id"]).to_csv(index=False)
-    st.download_button(
-        label="⬇️ Download All as CSV",
-        data=csv,
-        file_name="parsed_resumes.csv",
-        mime="text/csv",
+    bars = (
+        alt.Chart(chart_df)
+        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+        .encode(
+            x=alt.X("Stage:N", sort=PIPELINE_STAGES, title=None),
+            y=alt.Y("Candidates:Q", title="Candidates"),
+            color=alt.Color(
+                "Stage:N",
+                sort=PIPELINE_STAGES,
+                scale=alt.Scale(domain=PIPELINE_STAGES, range=stage_colors),
+                legend=None,
+            ),
+            tooltip=[alt.Tooltip("Stage:N"), alt.Tooltip("Candidates:Q")],
+        )
     )
+    labels = bars.mark_text(dy=-8).encode(text="Candidates:Q")
+
+    st.altair_chart(bars + labels, width="stretch")

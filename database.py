@@ -3,6 +3,9 @@ import pandas as pd
 
 DB_NAME = "resumes.db"
 
+# Hiring pipeline stages, in order. A new save always starts at the first stage.
+PIPELINE_STAGES = ["Screening", "Shortlisted", "Interview", "Offer"]
+
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -17,6 +20,7 @@ def init_db():
             education   TEXT,
             experience  TEXT,
             projects    TEXT,
+            status      TEXT DEFAULT 'Screening',
             uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -26,6 +30,8 @@ def init_db():
     for column in ("experience", "projects"):
         if column not in existing_columns:
             conn.execute(f"ALTER TABLE resumes ADD COLUMN {column} TEXT")
+    if "status" not in existing_columns:
+        conn.execute("ALTER TABLE resumes ADD COLUMN status TEXT DEFAULT 'Screening'")
     conn.commit()
     conn.close()
 
@@ -45,8 +51,8 @@ def save_resume(filename: str, data: dict):
     conn = sqlite3.connect(DB_NAME)
     conn.execute(
         """
-        INSERT INTO resumes (filename, name, email, phone, skills, education, experience, projects)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO resumes (filename, name, email, phone, skills, education, experience, projects, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             filename,
@@ -57,10 +63,27 @@ def save_resume(filename: str, data: dict):
             " | ".join(data["education"]),
             _serialize_entries(data["experience"]),
             _serialize_entries(data["projects"]),
+            PIPELINE_STAGES[0],
         ),
     )
     conn.commit()
     conn.close()
+
+
+def update_status(record_id: int, status: str) -> None:
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute("UPDATE resumes SET status = ? WHERE id = ?", (status, record_id))
+    conn.commit()
+    conn.close()
+
+
+def get_pipeline_counts() -> dict:
+    """Candidate count per pipeline stage, in PIPELINE_STAGES order (0 if none)."""
+    conn = sqlite3.connect(DB_NAME)
+    rows = conn.execute("SELECT status, COUNT(*) FROM resumes GROUP BY status").fetchall()
+    conn.close()
+    counts = dict(rows)
+    return {stage: counts.get(stage, 0) for stage in PIPELINE_STAGES}
 
 
 def find_duplicate(email: str):

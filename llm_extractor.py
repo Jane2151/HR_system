@@ -1,42 +1,60 @@
 import json
 import os
 
+import openai
 from dotenv import load_dotenv
 from openai import OpenAI
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 
 MODEL = "openrouter/free"
 MAX_ATTEMPTS = 3
 
 
-class EducationEntry(BaseModel):
+class _StrictModel(BaseModel):
+    # Forbids extra fields, so the generated JSON Schema sets
+    # "additionalProperties": false — required for OpenAI/OpenRouter strict
+    # structured-output mode.
+    model_config = ConfigDict(extra="forbid")
+
+
+class EducationEntry(_StrictModel):
     institution: str
     degree: str
     cgpa: str
 
 
-class ProjectEntry(BaseModel):
+class ProjectEntry(_StrictModel):
     project: str
     description: str
     skills: list[str]
 
 
-class ExperienceEntry(BaseModel):
+class ExperienceEntry(_StrictModel):
     company: str
     position: str
     start_date: str
     end_date: str
     skills: list[str]
-    projects: list[ProjectEntry]
+    project_titles: list[str]
 
 
-class ResumeFields(BaseModel):
+class ResumeFields(_StrictModel):
     name: str
-    other_skills: list[str]
+    skills: list[str]
     education: list[EducationEntry]
     experience: list[ExperienceEntry]
     projects: list[ProjectEntry]
+
+
+_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "resume_fields",
+        "strict": True,
+        "schema": ResumeFields.model_json_schema(),
+    },
+}
 
 
 load_dotenv()
@@ -56,115 +74,50 @@ _client = OpenAI(
 _PROMPT = """
 You are a resume information extraction system.
 
-Extract structured information ONLY from the supplied resume.
+Extract only information explicitly stated in the resume.
+Do not guess or infer missing information.
 
-STRICT RULES:
+Rules:
 
-1. Do not guess or invent information.
+1. name
+- Return the candidate's full name exactly as written.
+- Do not use names of referees, managers, lecturers, companies, or section headings.
+- If unclear, return "Not found".
 
-2. name:
-   - Return the candidate's full name exactly as stated.
-   - Do not return a referee, lecturer, manager, company name,
-     job title, or section heading.
-   - If the candidate name cannot be determined, return "Not found".
+2. skills
+- Return all explicitly stated technical and professional skills anywhere in the resume.
+- Include skills from Skills, Experience, and Projects sections.
+- Do not infer skills from job titles, degrees, or vague responsibilities.
+- Do not include company names or qualifications.
+- Remove duplicates.
+- Skills may also appear inside experience.skills or projects.skills.
 
-3. other_skills:
-   - Skills belong to whichever section they are demonstrated in. A skill
-     mentioned inside a Work Experience entry (or a project nested under it)
-     belongs in that entry's own "skills" list (rule 5). A skill mentioned
-     inside an independent Projects entry belongs in that project's own
-     "skills" list (rule 6).
-   - other_skills is ONLY for skills that are NOT already captured in any
-     experience or project entry — typically a standalone "Skills" section,
-     or soft skills mentioned outside any specific job/project.
-   - A skill only counts if it is explicitly named as something used or applied.
-     Do not infer skills merely from a job title, degree, or vague responsibility
-     (e.g. do not infer "Leadership" just because someone was a "Team Lead"
-     unless leadership/management is explicitly mentioned).
-   - Do not include company names or education qualifications.
-   - Remove duplicate skills, and never repeat a skill that already appears
-     under an experience or project entry.
+3. education
+- Create one entry per qualification.
+- Match the correct institution to the qualification.
+- Extract CGPA/GPA only if stated.
+- Use "N/A" if CGPA/GPA is absent.
+- Use "Unknown Institution" if no institution is stated.
 
-4. education:
-   - Create one entry for each qualification.
-   - Match each qualification with its correct institution.
-   - Extract CGPA/GPA only if explicitly stated.
-   - If CGPA/GPA is absent, return "N/A".
-   - If the institution cannot be found, return "Unknown Institution".
+4. experience
+- Extract each paid job, internship, industrial training, or work placement.
+- company: employer name, or "Unknown Company".
+- position: job title, or "Unknown Position".
+- start_date and end_date: preserve the resume's wording.
+- Use "Present" only if the resume explicitly indicates the role is ongoing.
+- Use "Unknown" if a date cannot be determined.
+- skills: skills explicitly associated with that job.
+- project_titles: titles of projects from the projects list that were completed during that job.
+- Do not include volunteering or education.
 
-5. experience:
-   - Extract each clearly identifiable paid job, internship, industrial training, or work placement, regardless of the exact section heading.
-   - company: the employer name. If it cannot be found, return "Unknown Company".
-   - position: the job title held. If it cannot be found, return "Unknown Position".
-   - start_date: exactly as written on the resume (e.g. "Jan 2020", "2020", "March 2021").
-   - end_date: exactly as written on the resume. If the role is ongoing, return
-     "Present". If it cannot be determined, return "Unknown".
-   - Do not calculate durations yourself — only return the raw dates as written.
-   - skills: tools, languages, or frameworks explicitly named in that job's own
-     description, outside of any specific named project (e.g. "used Jira and
-     Confluence daily" -> Jira, Confluence for that entry). Empty list if none.
-   - projects: any specific, named initiative described under this job
-     (e.g. "Led development of the Customer Portal using React and Node.js"
-     while working at Company X). Use the same fields as rule 6 (project,
-     description, skills), scoped to just that initiative. Empty list if the
-     job description has no distinct named projects, just general duties.
-   - Do not include unpaid volunteering or education here.
+5. projects
+- Extract every clearly identifiable project, including academic, personal, side, and work-related projects.
+- project: project title, or "Untitled Project" if no title is stated.
+- description: one short sentence describing the project's purpose. Do not invent details.
+- skills: tools, languages, or frameworks explicitly associated with that project.
+- Do not include education or general work duties as projects.
 
-6. projects (independent):
-   - Create one entry ONLY for projects that stand on their own — under a
-     Projects / Personal Projects / Academic Projects / Side Projects section,
-     NOT tied to a specific employer listed in rule 5. If a project is
-     explicitly described as done while working at a company, put it under
-     that experience entry's own "projects" list instead (rule 5), not here.
-   - project: the project's name/title. If it cannot be found, return "Untitled Project".
-   - description: ONE short sentence (roughly 15-20 words max) stating what
-     the project actually does/did — its purpose or function, in plain terms
-     (e.g. "A mobile app that lets students book campus facilities online").
-     Do not fill this with tool/language/framework names — those already go
-     in the separate "skills" field below, so avoid repeating them here.
-     Do not invent details that aren't stated, and do not copy multiple
-     resume bullet points verbatim — condense them. If no description is
-     given, return "".
-   - skills: tools, languages, or frameworks explicitly named in that project's
-     description. Empty list if none are named.
-   - Do not include work experience or education here.
-
-Return JSON ONLY using exactly this structure:
-
-{
-    "name": "string",
-    "other_skills": ["string"],
-    "education": [
-        {
-            "institution": "string",
-            "degree": "string",
-            "cgpa": "string"
-        }
-    ],
-    "experience": [
-        {
-            "company": "string",
-            "position": "string",
-            "start_date": "string",
-            "end_date": "string",
-            "skills": ["string"],
-            "projects": [
-                {
-                    "project": "string",
-                    "description": "string",
-                    "skills": ["string"]
-                }
-            ]
-        }
-    ],
-    "projects": [
-        {
-            "project": "string",
-            "description": "string",
-            "skills": ["string"]
-        }
-    ]
-}
+Return JSON matching the required schema.
 
 Resume:
 --------------------
@@ -183,7 +136,7 @@ def _extract_once(text: str) -> ResumeFields:
                 "content": _PROMPT.replace("{text}", text),
             }
         ],
-        response_format={"type": "json_object"},
+        response_format=_RESPONSE_FORMAT,
     )
 
     if not response.choices:
@@ -220,7 +173,7 @@ def extract_llm_fields(text: str) -> ResumeFields:
     for _ in range(MAX_ATTEMPTS):
         try:
             return _extract_once(text)
-        except (ValueError, json.JSONDecodeError, ValidationError) as e:
+        except (ValueError, json.JSONDecodeError, ValidationError, openai.APIError) as e:
             last_error = e
     raise RuntimeError(
         f"OpenRouter failed after {MAX_ATTEMPTS} attempts. Last error: {last_error}"

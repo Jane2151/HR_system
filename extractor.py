@@ -82,16 +82,51 @@ def _format_project_bullet(entry) -> str:
     return text
 
 
-def _format_experience(entries) -> list[dict]:
+def _match_experience_projects(experience_entries, project_entries):
+    """Join each experience entry to its projects by title (case-insensitive).
+
+    Returns (experience_projects, independent_projects):
+    - experience_projects: list parallel to experience_entries, each the list
+      of matched ProjectEntry objects for that job.
+    - independent_projects: projects not referenced by any experience entry.
+    """
+    projects_by_title = {p.project.strip().lower(): p for p in project_entries}
+    linked_titles = set()
+
+    experience_projects = []
+    for entry in experience_entries:
+        matched = []
+        for title in entry.project_titles:
+            key = title.strip().lower()
+            project = projects_by_title.get(key)
+            if project:
+                matched.append(project)
+                linked_titles.add(key)
+        experience_projects.append(matched)
+
+    independent_projects = [
+        p for p in project_entries if p.project.strip().lower() not in linked_titles
+    ]
+    return experience_projects, independent_projects
+
+
+def _compute_other_skills(all_skills: list[str], experience_entries, project_entries) -> list[str]:
+    """Skills not already covered by any experience or project's own skills list."""
+    used = {s.strip().lower() for p in project_entries for s in p.skills}
+    used |= {s.strip().lower() for e in experience_entries for s in e.skills}
+    return [s for s in all_skills if s.strip().lower() not in used]
+
+
+def _format_experience(experience_entries, experience_projects) -> list[dict]:
     """Return one {'header': str, 'bullets': list[str]} per job, for bullet-point display."""
     results = []
-    for entry in entries:
+    for entry, matched_projects in zip(experience_entries, experience_projects):
         end_label = "Present" if entry.end_date.strip().lower() in _ONGOING_MARKERS else entry.end_date
         duration = _format_duration(entry.start_date, entry.end_date)
         bullets = []
         if entry.skills:
             bullets.append("Skills: " + ", ".join(entry.skills))
-        bullets.extend(_format_project_bullet(p) for p in entry.projects)
+        bullets.extend(_format_project_bullet(p) for p in matched_projects)
         results.append({
             "header": f"{entry.position} at {entry.company} "
                       f"({entry.start_date} – {end_label}, {duration})",
@@ -119,12 +154,17 @@ def _format_projects(entries) -> list[dict]:
 def parse_resume(pdf_path: str) -> dict:
     text = extract_text(pdf_path)
     llm_fields = extract_llm_fields(text)
+
+    experience_projects, independent_projects = _match_experience_projects(
+        llm_fields.experience, llm_fields.projects
+    )
+
     return {
         "name": llm_fields.name,
         "email": extract_email(text),
         "phone": extract_phone(text),
-        "skills": llm_fields.other_skills,
+        "skills": _compute_other_skills(llm_fields.skills, llm_fields.experience, llm_fields.projects),
         "education": _format_education(llm_fields.education),
-        "experience": _format_experience(llm_fields.experience),
-        "projects": _format_projects(llm_fields.projects),
+        "experience": _format_experience(llm_fields.experience, experience_projects),
+        "projects": _format_projects(independent_projects),
     }
